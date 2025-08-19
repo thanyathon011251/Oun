@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MQTT with Teachable Machine</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+</head>
+<body>
+  <h2>Bottle Detection + MQTT</h2>
+  <div id="mqtt-status">MQTT: Disconnected</div>
+  <div id="label-container"></div>
+  <div id="webcam-container"></div>
+
+  <script>
+    const URL = "https://teachablemachine.withgoogle.com/models/FksGRsw6o/";
+
+    let model, webcam, labelContainer, maxPredictions;
+
+    // HiveMQ Broker Setup
+    const broker = "wss://broker.hivemq.com:8884/mqtt"; 
+    const topic = "bottle/detection";
+
+    const client = mqtt.connect(broker, {
+      clientId: "webclient-" + Math.random().toString(16).substr(2, 8),
+      clean: true,
+      reconnectPeriod: 1000
+    });
+
+    client.on("connect", () => {
+      document.getElementById("mqtt-status").innerText = "MQTT: Connected";
+      console.log(" Connected to HiveMQ Broker");
+      client.subscribe(topic);
+    });
+
+    client.on("error", (err) => {
+      document.getElementById("mqtt-status").innerText = "MQTT: Error";
+      console.error(" MQTT Error:", err);
+    });
+
+    client.on("close", () => {
+      document.getElementById("mqtt-status").innerText = "MQTT: Disconnected";
+      console.log(" MQTT Disconnected");
+    });
+
+    client.on("message", (t, message) => {
+      console.log(` Received [${t}]: ${message.toString()}`);
+    });
+
+    async function init() {
+      const modelURL = URL + "model.json";
+      const metadataURL = URL + "metadata.json";
+
+      model = await tmImage.load(modelURL, metadataURL);
+      maxPredictions = model.getTotalClasses();
+
+      const flip = true;
+      webcam = new tmImage.Webcam(224, 224, flip);
+      await webcam.setup();
+      await webcam.play();
+      window.requestAnimationFrame(loop);
+
+      document.getElementById("webcam-container").appendChild(webcam.canvas);
+      labelContainer = document.getElementById("label-container");
+      for (let i = 0; i < maxPredictions; i++) {
+        labelContainer.appendChild(document.createElement("div"));
+      }
+    }
+
+    async function loop() {
+      webcam.update();
+      await predict();
+      window.requestAnimationFrame(loop);
+    }
+
+    async function predict() {
+      const prediction = await model.predict(webcam.canvas);
+
+      let best = prediction[0];
+      for (let i = 0; i < maxPredictions; i++) {
+        if (prediction[i].probability > best.probability) {
+          best = prediction[i];
+        }
+        const classPrediction = prediction[i].className + ": " + prediction[i].probability.toFixed(2);
+        labelContainer.childNodes[i].innerHTML = classPrediction;
+      }
+
+      if (best.probability > 0.8) {
+        client.publish(topic, best.className.toUpperCase());
+        console.log(" Sent MQTT:", best.className.toUpperCase());
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
