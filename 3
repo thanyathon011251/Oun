@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Bottle Detection + MQTT</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin:0; padding:0;}
+    #webcam-container { max-width: 100%; margin:10px auto;}
+    video { max-width:100%; height:auto;}
+    #label-container { margin:10px; font-size:1.2em;}
+    button { padding:10px 20px; margin:5px; font-size:1em;}
+    #mqtt-status { margin:10px; font-weight:bold;}
+  </style>
+</head>
+<body>
+  <h2>Bottle Detection (Plastic vs Glass)</h2>
+  <button onclick="init('environment')">Start Back Camera</button>
+  <button onclick="init('user')">Start Front Camera</button>
+  <button onclick="stop()">Stop</button>
+
+  <div id="webcam-container"></div>
+  <div id="label-container"></div>
+  <div id="mqtt-status">MQTT: Disconnected</div>
+
+  <script>
+    // โมเดลของคุณ
+    const URL = "https://teachablemachine.withgoogle.com/models/FksGRsw6o/";
+
+    let model, webcam, labelContainer, maxPredictions;
+
+    // MQTT Setup HiveMQ
+    const broker = "wss://broker.hivemq.com:8884/mqtt";
+    const topic = "bottle/detection";
+
+    const client = mqtt.connect(broker, {
+      clientId: "webclient-" + Math.random().toString(16).substr(2, 8),
+      clean: true,
+      reconnectPeriod: 1000
+    });
+
+    client.on("connect", () => {
+      document.getElementById("mqtt-status").innerText = "MQTT: Connected ";
+      console.log("Connected to HiveMQ Broker");
+    });
+    client.on("error", (err) => {
+      document.getElementById("mqtt-status").innerText = "MQTT: Error ";
+      console.error("MQTT Error:", err);
+    });
+    client.on("close", () => {
+      document.getElementById("mqtt-status").innerText = "MQTT: Disconnected ";
+    });
+
+    async function init(facingMode) {
+      if(webcam) { webcam.stop(); document.getElementById("webcam-container").innerHTML=''; }
+      const modelURL = URL + "model.json";
+      const metadataURL = URL + "metadata.json";
+      model = await tmImage.load(modelURL, metadataURL);
+      maxPredictions = model.getTotalClasses();
+
+      webcam = new tmImage.Webcam(224,224,false);
+      try{
+        await webcam.setup({facingMode});
+        await webcam.play();
+        if(!webcam.canvas) throw new Error("Webcam canvas not initialized");
+        window.requestAnimationFrame(loop);
+      } catch(e){
+        console.error("Webcam setup failed:", e);
+        document.getElementById("label-container").innerText = "Error: " + e.message;
+        return;
+      }
+
+      document.getElementById("webcam-container").appendChild(webcam.canvas);
+      labelContainer = document.getElementById("label-container");
+      labelContainer.innerHTML = "";
+      for(let i=0;i<maxPredictions;i++){ labelContainer.appendChild(document.createElement("div")); }
+    }
+
+    async function loop(){
+      webcam.update();
+      await predict();
+      window.requestAnimationFrame(loop);
+    }
+
+    async function predict(){
+      const prediction = await model.predict(webcam.canvas);
+      let best = prediction[0];
+      for(let i=0;i<maxPredictions;i++){
+        if(prediction[i].probability > best.probability) best = prediction[i];
+        labelContainer.childNodes[i].innerHTML = prediction[i].className + ": " + prediction[i].probability.toFixed(2);
+      }
+
+      // ส่ง MQTT เฉพาะเมื่อมั่นใจ >0.8
+      if(best.probability > 0.8){
+        const msg = best.className.toUpperCase();
+        client.publish(topic, msg);
+        console.log("MQTT Sent:", msg);
+      }
+    }
+
+    function stop(){
+      if(webcam){
+        webcam.stop();
+        document.getElementById("webcam-container").innerHTML='';
+        document.getElementById("label-container").innerHTML='';
+      }
+    }
+  </script>
+</body>
+</html>
