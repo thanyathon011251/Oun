@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Teachable Machine + MQTT</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 0; }
+    #webcam-container { max-width: 100%; margin: 10px auto; }
+    video { max-width: 100%; height: auto; }
+    #label-container { margin: 10px; font-size: 1.2em; }
+    button { padding: 10px 20px; font-size: 1em; margin: 5px; }
+  </style>
+</head>
+<body>
+  <div>Teachable Machine + MQTT</div>
+  <button type="button" onclick="init('environment')">Start (Back Camera)</button>
+  <button type="button" onclick="init('user')">Start (Front Camera)</button>
+  <button type="button" onclick="stop()">Stop</button>
+  <div id="webcam-container"></div>
+  <div id="label-container"></div>
+
+  <script type="text/javascript">
+    const URL = "https://teachablemachine.withgoogle.com/models/FksGRsw6o/";
+    let model, webcam, labelContainer, maxPredictions;
+
+    // MQTT setup
+    const options = {
+      username: "thany",
+      password: "123456789"
+    };
+    const client = mqtt.connect("wss://broker.hivemq.com:8884/mqtt", options);
+
+    client.on("connect", () => {
+      console.log("MQTT Connected");
+      client.subscribe("thn/1");
+    });
+
+    client.on("error", (err) => {
+      console.error("Connection error: ", err);
+    });
+
+    client.on("message", (topic, message) => {
+      console.log(`Received [${topic}]: ${message.toString()}`);
+    });
+
+    async function init(facingMode) {
+      const modelURL = URL + "model.json";
+      const metadataURL = URL + "metadata.json";
+
+      model = await tmImage.load(modelURL, metadataURL);
+      maxPredictions = model.getTotalClasses();
+
+      webcam = new tmImage.Webcam(224, 224, false);
+      try {
+        await webcam.setup({ facingMode: facingMode });
+        await webcam.play();
+        window.requestAnimationFrame(loop);
+      } catch (e) {
+        console.error("Webcam setup failed:", e);
+        document.getElementById("label-container").innerText = "Error: " + e.message;
+        return;
+      }
+
+      document.getElementById("webcam-container").appendChild(webcam.canvas);
+      labelContainer = document.getElementById("label-container");
+      labelContainer.innerHTML = "";
+      for (let i = 0; i < maxPredictions; i++) {
+        labelContainer.appendChild(document.createElement("div"));
+      }
+    }
+
+    async function loop() {
+      webcam.update();
+      await predict();
+      window.requestAnimationFrame(loop);
+    }
+
+    async function predict() {
+      const prediction = await model.predict(webcam.canvas);
+      let bestClass = "";
+      let bestProb = 0;
+
+      for (let i = 0; i < maxPredictions; i++) {
+        const prob = prediction[i].probability.toFixed(2);
+        labelContainer.childNodes[i].innerHTML = prediction[i].className + ": " + prob;
+        if (prob > bestProb) {
+          bestProb = prob;
+          bestClass = prediction[i].className;
+        }
+      }
+
+      if (bestProb > 0.8) {
+        client.publish("thn/1", bestClass);
+        console.log("Published:", bestClass);
+      }
+    }
+
+    function stop() {
+      if (webcam) {
+        webcam.stop();
+        document.getElementById("webcam-container").innerHTML = '';
+        document.getElementById("label-container").innerHTML = '';
+      }
+    }
+  </script>
+</body>
+</html>
