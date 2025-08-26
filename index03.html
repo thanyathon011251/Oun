@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Teachable Machine + MQTT</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; background: #f4f4f9; }
+    #status { margin: 10px; padding: 10px; border-radius: 8px; }
+    #status.success { background: #d4edda; color: #155724; }
+    #status.error { background: #f8d7da; color: #721c24; }
+    #status.info { background: #d1ecf1; color: #0c5460; }
+    button { margin: 10px; padding: 10px 20px; font-size: 16px; cursor: pointer; }
+    #webcam-container { margin: 20px auto; }
+  </style>
+</head>
+<body>
+  <h1>Plastic Bottle Classifier </h1>
+  <button onclick="init()">Start</button>
+  <button onclick="stop()">Stop</button>
+  <div id="status" class="info">Idle</div>
+  <div id="webcam-container"></div>
+  <div id="label-container"></div>
+
+  <script>
+const MODEL_URL = "https://teachablemachine.withgoogle.com/models/FksGRsw6o/";
+
+    let model, webcam, labelContainer, maxPredictions;
+    let loopInterval;
+    let mqttClient;
+const MQTT_BROKER = "broker.hivemq.com";
+    const MQTT_PORT = 8884; // WebSocket Secure (SSL)
+    const MQTT_TOPIC = "esp32/bottle";
+ function updateStatus(msg, type="info") {
+      const status = document.getElementById("status");
+      status.textContent = msg;
+      status.className = type;
+      console.log("[STATUS]", msg);
+    }
+async function init() {
+      updateStatus("Loading model...", "info");
+      const modelURL = MODEL_URL + "model.json";
+      const metadataURL = MODEL_URL + "metadata.json";
+
+      model = await tmImage.load(modelURL, metadataURL);
+      maxPredictions = model.getTotalClasses();
+
+      updateStatus("Starting webcam...", "info");
+      webcam = new tmImage.Webcam(224, 224, true);
+      await webcam.setup();
+      await webcam.play();
+      document.getElementById("webcam-container").appendChild(webcam.canvas);
+
+      labelContainer = document.getElementById("label-container");
+      labelContainer.innerHTML = "";
+      for (let i = 0; i < maxPredictions; i++) {
+        labelContainer.appendChild(document.createElement("div"));
+      }
+  connectMQTT();
+ loopInterval = setInterval(loop, 500);
+      updateStatus("System ready ", "success");
+async function loop() {
+      webcam.update();
+      await predict();
+ }
+ async function predict() {
+      const prediction = await model.predict(webcam.canvas);
+      let foundPlastic = false;
+
+      for (let i = 0; i < maxPredictions; i++) {
+        const className = prediction[i].className;
+        const probability = prediction[i].probability.toFixed(2);
+        labelContainer.childNodes[i].innerHTML = `${className}: ${probability}`;
+
+        if (className.toLowerCase().includes("plastic") && probability > 0.90) {
+          foundPlastic = true;
+        }
+      }
+
+      if (foundPlastic) {
+        sendMQTT("plastic");
+        updateStatus("Plastic detected Sent to ESP32", "success");
+      }
+    }
+  function stop() {
+      clearInterval(loopInterval);
+      if (webcam) webcam.stop();
+      updateStatus("System stopped ", "error");
+    }
+function connectMQTT() {
+      updateStatus("Connecting to MQTT...", "info");
+      mqttClient = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, "webclient-" + Math.random());
+
+      mqttClient.onConnectionLost = (response) => {
+        updateStatus("MQTT Disconnected ", "error");
+      };
+
+      mqttClient.connect({
+        useSSL: true,
+        onSuccess: () => {
+          updateStatus("MQTT Connected ", "success");
+        },
+        onFailure: (err) => {
+          updateStatus("MQTT Failed  " + err.errorMessage, "error");
+        }
+      });
+    }
+ function sendMQTT(msg) {
+      if (mqttClient && mqttClient.isConnected()) {
+        const message = new Paho.MQTT.Message(msg);
+        message.destinationName = MQTT_TOPIC;
+        mqttClient.send(message);
+        console.log(" Sent to MQTT:", msg);
+      } else {
+        updateStatus("MQTT not connected!", "error");
+      }
+    }
+  </script>
+</body>
+</html>
